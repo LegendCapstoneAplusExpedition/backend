@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>실시간 음성 방송 플랫폼</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; background: #f4f4f9; }
+        .container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .section { margin-bottom: 20px; padding: 15px; border: 1px solid #ddd; border-radius: 4px; }
+        .hidden { display: none; }
+        input, button { padding: 10px; margin: 5px 0; width: 100%; box-sizing: border-box; }
+        button { background: #007bff; color: white; border: none; cursor: pointer; border-radius: 4px; }
+        button:hover { background: #0056b3; }
+        button.secondary { background: #6c757d; }
+        #chat-messages { height: 200px; overflow-y: auto; border: 1px solid #eee; padding: 10px; margin-bottom: 10px; background: #fafafa; }
+        .message { margin-bottom: 5px; }
+        .message .user { font-weight: bold; color: #007bff; }
+        .status { color: green; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎙️ 실시간 음성 방송</h1>
+
+        <!-- 1. Authentication -->
+        <div id="auth-section" class="section">
+            <h3>로그인 / 회원가입</h3>
+            <input type="text" id="username" placeholder="아이디">
+            <input type="password" id="password" placeholder="비밀번호">
+            <button onclick="login()">로그인</button>
+            <button class="secondary" onclick="signup()">회원가입</button>
+        </div>
+
+        <!-- 2. Main Menu -->
+        <div id="main-section" class="section hidden">
+            <p>환영합니다, <span id="display-name" class="status"></span>님!</p>
+            <button onclick="showCreateBroadcast()">방송 시작하기 (Host)</button>
+            <hr>
+            <h3>현재 라이브 방송</h3>
+            <div id="live-broadcasts-container" style="margin-bottom: 15px;">
+                <p>라이브 방송을 불러오는 중...</p>
+            </div>
+            <button class="secondary" onclick="fetchLiveBroadcasts()">🔄 목록 새로고침</button>
+            <hr>
+            <div id="broadcast-list">
+                <input type="text" id="join-broadcast-id" placeholder="직접 방송 ID 입력하여 입장">
+                <button onclick="joinBroadcastManual()">방송 ID로 입장하기</button>
+            </div>
+            <hr>
+            <h3>유저 게시판 목록</h3>
+            <div id="user-list-container" style="margin-bottom: 15px;">
+                <p>유저 목록을 불러오는 중...</p>
+            </div>
+            <button class="secondary" onclick="fetchUserList()">🔄 유저 목록 새로고침</button>
+            <hr>
+            <button class="secondary" onclick="logout()">로그아웃</button>
+        </div>
+
+        <!-- 4. User Board (Posts) -->
+        <div id="board-section" class="section hidden">
+            <h2 id="board-title-display">게시판</h2>
+            <p id="board-description-display" style="color: #666; font-size: 0.9em;"></p>
+            <div id="posts-container" style="height: 300px; overflow-y: auto; border: 1px solid #eee; padding: 10px; margin-bottom: 10px; background: #fafafa;">
+                <!-- 게시글들이 여기에 표시됨 -->
+            </div>
+            <div id="post-create-form" style="border-top: 1px solid #ddd; padding-top: 10px;">
+                <input type="text" id="post-title-input" placeholder="제목">
+                <textarea id="post-content-input" placeholder="내용을 입력하세요..." style="width: 100%; height: 80px; padding: 10px; box-sizing: border-box; margin: 5px 0; border: 1px solid #ddd; border-radius: 4px;"></textarea>
+                <select id="post-category-select" style="padding: 10px; margin: 5px 0; width: 100%; border: 1px solid #ddd; border-radius: 4px;">
+                    <option value="일반">일반</option>
+                    <option value="Q&A">Q&A</option>
+                    <option value="공지">공지</option>
+                </select>
+                <button onclick="postNewPost()">글 작성하기</button>
+            </div>
+            <hr>
+            <button class="secondary" onclick="showSection('main-section')">뒤로 가기</button>
+        </div>
+
+        <!-- 3. Broadcast Room -->
+        <div id="room-section" class="section hidden">
+            <h2 id="room-title">방송 중...</h2>
+            <p>ID: <span id="room-id"></span></p>
+            <div id="host-controls" class="hidden">
+                <button id="start-produce" onclick="startStreaming()">🎙️ 마이크 켜기</button>
+                <div style="background: #e9ecef; padding: 10px; border-radius: 4px; margin: 10px 0;">
+                    <p style="margin: 0 0 10px 0; font-weight: bold;">🤖 AI 진행자 설정</p>
+                    <button id="start-ai-btn" onclick="toggleAIAgent(true)" style="background: #28a745; margin-bottom: 5px;">AI 진행자 소환</button>
+                    <button id="stop-ai-btn" class="secondary" onclick="toggleAIAgent(false)" style="display: none;">AI 진행자 퇴장</button>
+                    <p id="ai-status" style="margin: 5px 0 0 0; font-size: 0.85em; color: #666;"></p>
+                </div>
+                <button id="end-broadcast-btn" class="secondary" onclick="endBroadcast()" style="margin-top: 10px; background: #dc3545;">🔴 방송 종료하기</button>
+                <p class="status" id="streaming-status"></p>
+            </div>
+            
+            <div id="listener-controls" class="hidden">
+                <p>방송을 듣고 있습니다...</p>
+                <audio id="remote-audio" autoplay></audio>
+            </div>
+
+            <div id="chat-section">
+                <h3>채팅</h3>
+                <div id="chat-messages"></div>
+                <input type="text" id="chat-input" placeholder="메시지를 입력하세요..." onkeypress="if(event.key==='Enter') sendChat()">
+                <button onclick="sendChat()">전송</button>
+            </div>
+            
+            <button class="secondary" onclick="leaveRoom()">나가기</button>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="/socket.io/socket.io.js"></script>
+    <script type="module">
+        import * as mediasoupClient from 'https://esm.sh/mediasoup-client@3';
+        window.mediasoupClient = mediasoupClient;
+        console.log('mediasoup-client loaded via esm.sh');
+    </script>
+    <script src="app.js"></script>
+</body>
+</html>
