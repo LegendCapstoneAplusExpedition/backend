@@ -1,0 +1,4 @@
+[submodule "src/ai-module"]
+	path = src/ai-module
+	url = https://github.com/LegendCapstoneAplusExpedition/LCAE-AI.git
+	branch = Total_pipeline
