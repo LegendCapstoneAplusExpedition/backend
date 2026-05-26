@@ -1,10 +1,14 @@
 const jwt = require('jsonwebtoken');
 const config = require('../config');
 const broadcastService = require('../services/broadcastService');
+const aiService = require('../services/aiService');
 const Chat = require('../models/Chat');
 const Broadcast = require('../models/Broadcast');
 
 module.exports = (io) => {
+  // Store io globally so other services (like aiService/aiRoute) can use it if needed
+  global.io = io;
+
   // Authentication Middleware for Socket.IO
   io.use((socket, next) => {
     const token = socket.handshake.auth.token || socket.handshake.headers['x-auth-token'];
@@ -51,7 +55,16 @@ module.exports = (io) => {
         socket.broadcastId = broadcastId;
         socket.isHost = false;
 
-        callback({ success: true, ...data });
+        // 현재 방에 존재하는 모든 Producer(호스트 음성, AI 등) 목록 전달
+        const room = broadcastService.rooms.get(broadcastId);
+        const existingProducers = [];
+        if (room && room.producers) {
+          for (const producer of room.producers.values()) {
+            existingProducers.push({ producerId: producer.id });
+          }
+        }
+
+        callback({ success: true, ...data, existingProducers });
       } catch (err) {
         console.error('Join broadcast failed:', err);
         callback({ success: false, error: err.message });
@@ -92,6 +105,9 @@ module.exports = (io) => {
         room.producers.set(producer.id, producer);
         
         socket.to(broadcastId).emit('newProducer', { producerId: producer.id });
+
+        // AI 에이전트에게 새로운 Producer(주로 호스트 오디오) 알림
+        aiService.notifyNewProducer(broadcastId, producer.id);
 
         callback({ success: true, producerId: producer.id });
       } catch (err) {

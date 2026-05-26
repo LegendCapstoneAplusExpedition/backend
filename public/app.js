@@ -1,9 +1,8 @@
 let socket;
 let device;
 let sendTransport;
-let recvTransport;
+const consumers = new Map(); // producerId -> { consumer, transport }
 let producer;
-let consumer;
 let currentBroadcastId;
 let currentBoardId = null;
 let userData = null;
@@ -148,6 +147,14 @@ async function joinBroadcast(broadcastId) {
 
             try {
                 await initMediasoup(res.rtpCapabilities);
+                
+                // 이미 방송 중인 스트림(호스트 등)이 있다면 연결
+                if (res.existingProducers && res.existingProducers.length > 0) {
+                    console.log(`Found ${res.existingProducers.length} existing producers. Connecting...`);
+                    for (const p of res.existingProducers) {
+                        onNewProducer(p);
+                    }
+                }
             } catch (err) {
                 alert('음성 엔진 초기화 실패: ' + err.message);
             }
@@ -286,13 +293,27 @@ async function startStreaming() {
 }
 
 async function onNewProducer({ producerId }) {
-    if (!device || !device.loaded) return;
+    console.log(`[Mediasoup] New producer detected: ${producerId}`);
+    if (!device || !device.loaded) {
+        console.warn('[Mediasoup] Device not loaded yet, ignoring producer');
+        return;
+    }
+
+    // 이미 이 Producer를 소비 중이라면 중복 생성 방지
+    if (consumers.has(producerId)) {
+        console.log(`[Mediasoup] Already consuming producer: ${producerId}`);
+        return;
+    }
 
     socket.emit('createWebRtcTransport', { broadcastId: currentBroadcastId }, async (res) => {
-        if (!res.success) return;
+        if (!res.success) {
+            console.error('[Mediasoup] Failed to create recv transport:', res.error);
+            return;
+        }
 
         try {
-            recvTransport = device.createRecvTransport(res.params);
+            console.log(`[Mediasoup] Creating recv transport for producer: ${producerId}`);
+            const recvTransport = device.createRecvTransport(res.params);
 
             recvTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
                 socket.emit('connectWebRtcTransport', { 
@@ -308,25 +329,73 @@ async function onNewProducer({ producerId }) {
                 producerId,
                 rtpCapabilities: device.rtpCapabilities
             }, async (res) => {
-                if (!res.success) return;
+                if (!res.success) {
+                    console.error('[Mediasoup] Failed to consume:', res.error);
+                    return;
+                }
 
-                consumer = await recvTransport.consume({
+                console.log(`[Mediasoup] Consuming producer: ${producerId}, consumerId: ${res.id}`);
+                const consumer = await recvTransport.consume({
                     id: res.id,
                     producerId: res.producerId,
                     kind: res.kind,
                     rtpParameters: res.rtpParameters
                 });
 
+                consumers.set(producerId, { consumer, transport: recvTransport });
+
                 const { track } = consumer;
-                document.getElementById('remote-audio').srcObject = new MediaStream([track]);
+                
+                // 새로운 오디오 엘리먼트 동적 생성
+                let remoteAudio = document.getElementById(`audio-${producerId}`);
+                if (!remoteAudio) {
+                    remoteAudio = document.createElement('audio');
+                    remoteAudio.id = `audio-${producerId}`;
+                    remoteAudio.setAttribute('autoplay', 'true');
+                    remoteAudio.setAttribute('playsinline', 'true');
+                    document.body.appendChild(remoteAudio);
+                }
+                
+                remoteAudio.srcObject = new MediaStream([track]);
                 
                 socket.emit('resumeConsumer', { 
                     broadcastId: currentBroadcastId, 
                     consumerId: consumer.id 
-                }, () => {});
+                }, async (res) => {
+                    if (res.success) {
+                        try {
+                            await remoteAudio.play();
+                            console.log(`[Mediasoup] Audio playback started for: ${producerId}`);
+                        } catch (err) {
+                            console.warn('[Mediasoup] Auto-play blocked. User interaction needed.');
+                            // 브라우저 정책으로 자동 재생이 막힌 경우, 사용자에게 버튼 노출 등의 처리 가능
+                            const btn = document.createElement('button');
+                            btn.innerText = '🔊 소리 켜기';
+                            btn.style = 'position:fixed; top:20px; right:20px; z-index:9999; background:#ff4757; color:white; border:none; padding:10px 20px; border-radius:5px; cursor:pointer;';
+                            btn.onclick = () => {
+                                remoteAudio.play();
+                                btn.remove();
+                            };
+                            document.body.appendChild(btn);
+                        }
+                    }
+                });
+
+                consumer.on('transportclose', () => {
+                    console.log(`[Mediasoup] Consumer transport closed: ${producerId}`);
+                    remoteAudio.remove();
+                    consumers.delete(producerId);
+                });
+
+                consumer.on('producerclose', () => {
+                    console.log(`[Mediasoup] Producer closed: ${producerId}`);
+                    remoteAudio.remove();
+                    consumers.delete(producerId);
+                    recvTransport.close();
+                });
             });
         } catch (err) {
-            console.error('Failed to consume:', err);
+            console.error('[Mediasoup] Failed to setup consumer:', err);
         }
     });
 }

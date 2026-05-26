@@ -48,6 +48,15 @@ const aiService = require('../services/aiService');
 router.post('/:id/ai/start', auth, async (req, res) => {
   try {
     const result = await aiService.startAIAgent(req.params.id);
+    
+    // 클라이언트들에게 AI Producer가 생성되었음을 알림
+    if (global.io && result.aiProducerId) {
+      global.io.to(req.params.id).emit('newProducer', { 
+        producerId: result.aiProducerId,
+        isAI: true 
+      });
+    }
+
     res.json(result);
   } catch (err) {
     res.status(400).json({ error: err.message });
