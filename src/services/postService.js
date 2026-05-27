@@ -10,21 +10,8 @@ exports.updatePost = async (postId, userId, updateData) => {
     throw new Error('NOT_AUTHORIZED');
   }
 
-  // Handle case where only 'content' is provided in title\ncontent format
-  if (updateData.content && !updateData.title) {
-    const lines = updateData.content.split('\n');
-    if (lines.length > 1) {
-      post.title = lines[0].trim();
-      post.content = lines.slice(1).join('\n').trim();
-    } else {
-      post.title = lines[0].trim();
-      post.content = lines[0].trim();
-    }
-  } else {
-    if (updateData.title) post.title = updateData.title;
-    if (updateData.content) post.content = updateData.content;
-  }
-
+  // Update only content and category
+  if (updateData.content) post.content = updateData.content;
   if (updateData.category) post.category = updateData.category;
 
   return await post.save();
