@@ -19,7 +19,10 @@ async function startAIAgent(broadcastId) {
   console.log(`[AI] Starting Agent for broadcast: ${broadcastId}`);
 
   // 1. Python 프로세스 실행
-  const pythonPath = path.join(__dirname, '../ai-module/.venv/bin/python'); 
+  const isWindows = os.platform() === 'win32';
+  const pythonPath = isWindows
+    ? path.join(__dirname, '../ai-module/venv/Scripts/python.exe')
+    : path.join(__dirname, '../ai-module/.venv/bin/python');
   const scriptPath = path.join(__dirname, '../ai-module/main.py');
   const aiPort = 8765;
   
@@ -31,8 +34,13 @@ async function startAIAgent(broadcastId) {
     env: {
       ...process.env,
       BROADCAST_ID: broadcastId,
+      PYTHONUTF8: '1',
+      PYTHONIOENCODING: 'utf-8',
     },
   });
+
+  pythonProcess.stdout.setEncoding('utf-8');
+  pythonProcess.stderr.setEncoding('utf-8');
 
   pythonProcess.stdout.on('data', (data) => console.log(`[AI-Py-Out]: ${data}`));
   pythonProcess.stderr.on('data', (data) => {
@@ -198,29 +206,37 @@ async function setupBridgeHandlers(broadcastId) {
     const ffmpegTTS = spawn('ffmpeg', [
       '-re',
       '-f', 's16le',
-      '-ar', '24000', 
+      '-ar', '24000',
       '-ac', '1',
       '-i', 'pipe:0',
       '-acodec', 'libopus',
       '-ab', '64k',
       '-ar', '48000',
       '-ac', '2',
+      '-ssrc', '11111111',
+      '-payload_type', '101',
       '-f', 'rtp',
-      `rtp://127.0.0.1:${ttsRtpPort}?payload_type=101`
+      `rtp://127.0.0.1:${ttsRtpPort}`
     ]);
 
     ffmpegTTS.on('error', (err) => console.error(`[AI] FFmpeg TTS Error: ${err.message}`));
+    ffmpegTTS.stderr.on('data', (d) => {
+      const m = d.toString();
+      if (m.toLowerCase().includes('error')) console.error(`[AI] FFmpeg TTS: ${m.trim()}`);
+    });
 
     const ttsUdpSocket = dgram.createSocket('udp4');
     ttsUdpSocket.on('error', (err) => console.error(`[AI] TTS UDP Socket Error: ${err.message}`));
-    
+
     ttsUdpSocket.bind(ttsRtpPort, '127.0.0.1');
     ttsUdpSocket.on('message', (packet) => {
       try {
-        if (agent.aiTransport && !agent.aiTransport.closed) {
-          agent.aiTransport.sendRtp(packet);
+        if (agent.aiProducer && !agent.aiProducer.closed) {
+          agent.aiProducer.send(packet);
         }
-      } catch (err) {}
+      } catch (err) {
+        console.error(`[AI] aiProducer.send failed: ${err.message}`);
+      }
     });
 
     const onMessage = (data) => {
