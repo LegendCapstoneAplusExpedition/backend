@@ -42,12 +42,17 @@ module.exports = {
       ]
     },
     webRtcTransportOptions: {
-      listenIps: [
-        {
+      // MEDIASOUP_ANNOUNCED_IP 에 쉼표로 여러 IP를 넣으면 각각 ICE 후보로 알림.
+      // 예) "127.0.0.1,192.168.45.19,211.117.243.101"
+      //   → 로컬/LAN/인터넷 접속자가 각자 도달 가능한 경로를 자동 선택.
+      listenIps: (process.env.MEDIASOUP_ANNOUNCED_IP || '127.0.0.1')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((announcedIp) => ({
           ip: process.env.MEDIASOUP_LISTEN_IP || '0.0.0.0',
-          announcedIp: process.env.MEDIASOUP_ANNOUNCED_IP || '127.0.0.1'
-        }
-      ],
+          announcedIp,
+        })),
       initialAvailableOutgoingBitrate: 1000000,
       minimumAvailableOutgoingBitrate: 600000,
       maxSctpMessageSize: 262144,

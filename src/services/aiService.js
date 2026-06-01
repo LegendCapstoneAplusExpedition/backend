@@ -5,6 +5,7 @@ const os = require('os');
 const dgram = require('dgram');
 const WebSocket = require('ws');
 const broadcastService = require('./broadcastService');
+const Broadcast = require('../models/Broadcast');
 
 const activeAgents = new Map();
 
@@ -16,7 +17,16 @@ async function startAIAgent(broadcastId) {
   const room = broadcastService.rooms.get(broadcastId);
   if (!room) throw new Error('Broadcast room not found');
 
-  console.log(`[AI] Starting Agent for broadcast: ${broadcastId}`);
+  // 방송 제목을 AI 주제로 전달 (LLM 환각 감소)
+  let broadcastTopic = '';
+  try {
+    const broadcast = await Broadcast.findById(broadcastId).select('title').lean();
+    if (broadcast && broadcast.title) broadcastTopic = broadcast.title;
+  } catch (err) {
+    console.error(`[AI] 방송 제목 조회 실패: ${err.message}`);
+  }
+
+  console.log(`[AI] Starting Agent for broadcast: ${broadcastId}${broadcastTopic ? ` (주제: ${broadcastTopic})` : ''}`);
 
   // 1. Python 프로세스 실행
   const isWindows = os.platform() === 'win32';
@@ -25,15 +35,21 @@ async function startAIAgent(broadcastId) {
     : path.join(__dirname, '../ai-module/.venv/bin/python');
   const scriptPath = path.join(__dirname, '../ai-module/main.py');
   const aiPort = 8765;
-  
-  const pythonProcess = spawn(pythonPath, [
+
+  const pythonArgs = [
     scriptPath,
     '--mode', 'server',
-    '--port', aiPort.toString()
-  ], {
+    '--port', aiPort.toString(),
+  ];
+  if (broadcastTopic) {
+    pythonArgs.push('--topic', broadcastTopic);
+  }
+
+  const pythonProcess = spawn(pythonPath, pythonArgs, {
     env: {
       ...process.env,
       BROADCAST_ID: broadcastId,
+      BROADCAST_TOPIC: broadcastTopic,
       PYTHONUTF8: '1',
       PYTHONIOENCODING: 'utf-8',
     },
