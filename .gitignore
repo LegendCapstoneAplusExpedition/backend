@@ -5,3 +5,7 @@ node_modules/
 *.log
 dist/
 build/
+
+# TLS 인증서 (자체 서명)
+certs/
+*.pem
