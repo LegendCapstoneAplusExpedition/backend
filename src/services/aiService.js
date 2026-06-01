@@ -9,6 +9,50 @@ const Broadcast = require('../models/Broadcast');
 
 const activeAgents = new Map();
 
+function resolveFfmpeg() {
+  if (process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)) {
+    return process.env.FFMPEG_PATH;
+  }
+
+  if (os.platform() !== 'win32') return 'ffmpeg';
+
+  const localAppData = process.env.LOCALAPPDATA;
+  const candidates = [
+    localAppData && path.join(
+      localAppData,
+      'Microsoft/WinGet/Packages/Gyan.FFmpeg.Essentials_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.1.1-essentials_build/bin/ffmpeg.exe'
+    ),
+    localAppData && path.join(
+      localAppData,
+      'Microsoft/WinGet/Links/ffmpeg.exe'
+    ),
+  ].filter(Boolean);
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || 'ffmpeg';
+}
+
+const ffmpegPath = resolveFfmpeg();
+const ffmpegDir = ffmpegPath !== 'ffmpeg' ? path.dirname(ffmpegPath) : null;
+
+function resolveCudaBins() {
+  if (os.platform() !== 'win32') return [];
+
+  const candidates = [
+    process.env.CUDA_PATH && path.join(process.env.CUDA_PATH, 'bin'),
+    'C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.8\\bin',
+    'C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.9\\bin',
+    'C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin',
+    'C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.4\\bin',
+  ].filter(Boolean);
+
+  return candidates.filter((candidate) => fs.existsSync(path.join(candidate, 'cublas64_12.dll')));
+}
+
+const runtimePathEntries = [
+  ffmpegDir,
+  ...resolveCudaBins(),
+].filter(Boolean);
+
 async function startAIAgent(broadcastId) {
   if (activeAgents.has(broadcastId)) {
     throw new Error('AI Agent is already running for this broadcast');
@@ -30,10 +74,11 @@ async function startAIAgent(broadcastId) {
 
   // 1. Python 프로세스 실행
   const isWindows = os.platform() === 'win32';
+  const aiModuleDir = path.join(__dirname, '../ai-module');
   const pythonPath = isWindows
-    ? path.join(__dirname, '../ai-module/venv/Scripts/python.exe')
-    : path.join(__dirname, '../ai-module/.venv/bin/python');
-  const scriptPath = path.join(__dirname, '../ai-module/main.py');
+    ? path.join(aiModuleDir, 'venv/Scripts/python.exe')
+    : path.join(aiModuleDir, '.venv/bin/python');
+  const scriptPath = path.join(aiModuleDir, 'main.py');
   const aiPort = 8765;
 
   const pythonArgs = [
@@ -46,12 +91,15 @@ async function startAIAgent(broadcastId) {
   }
 
   const pythonProcess = spawn(pythonPath, pythonArgs, {
+    cwd: aiModuleDir,
     env: {
       ...process.env,
       BROADCAST_ID: broadcastId,
       BROADCAST_TOPIC: broadcastTopic,
       PYTHONUTF8: '1',
       PYTHONIOENCODING: 'utf-8',
+      FFMPEG_PATH: ffmpegPath,
+      PATH: [...runtimePathEntries, process.env.PATH || ''].join(path.delimiter),
     },
   });
 
@@ -197,7 +245,7 @@ async function setupBridgeHandlers(broadcastId) {
     fs.writeFileSync(sdpPath, sdpContent);
 
     // FFmpeg 실행 (STT용: RTP -> PCM)
-    const ffmpegSTT = spawn('ffmpeg', [
+    const ffmpegSTT = spawn(ffmpegPath, [
       '-protocol_whitelist', 'pipe,rtp,udp,file',
       '-analyzeduration', '0',
       '-probesize', '32',
@@ -222,7 +270,7 @@ async function setupBridgeHandlers(broadcastId) {
     const ttsRtpPort = 6004 + Math.floor(Math.random() * 10000);
 
     const spawnTTS = () => {
-      const proc = spawn('ffmpeg', [
+      const proc = spawn(ffmpegPath, [
         '-re',
         '-f', 's16le',
         '-ar', '24000',
