@@ -218,28 +218,37 @@ async function setupBridgeHandlers(broadcastId) {
     ffmpegSTT.on('error', (err) => console.error(`[AI] FFmpeg STT Error: ${err.message}`));
 
     // 3. TTS를 위한 FFmpeg 설정 (PCM -> RTP/Opus)
+    //    바지인 인터럽트 시 죽였다 새로 띄워 버퍼를 비움.
     const ttsRtpPort = 6004 + Math.floor(Math.random() * 10000);
-    const ffmpegTTS = spawn('ffmpeg', [
-      '-re',
-      '-f', 's16le',
-      '-ar', '24000',
-      '-ac', '1',
-      '-i', 'pipe:0',
-      '-acodec', 'libopus',
-      '-ab', '64k',
-      '-ar', '48000',
-      '-ac', '2',
-      '-ssrc', '11111111',
-      '-payload_type', '101',
-      '-f', 'rtp',
-      `rtp://127.0.0.1:${ttsRtpPort}`
-    ]);
 
-    ffmpegTTS.on('error', (err) => console.error(`[AI] FFmpeg TTS Error: ${err.message}`));
-    ffmpegTTS.stderr.on('data', (d) => {
-      const m = d.toString();
-      if (m.toLowerCase().includes('error')) console.error(`[AI] FFmpeg TTS: ${m.trim()}`);
-    });
+    const spawnTTS = () => {
+      const proc = spawn('ffmpeg', [
+        '-re',
+        '-f', 's16le',
+        '-ar', '24000',
+        '-ac', '1',
+        '-i', 'pipe:0',
+        '-acodec', 'libopus',
+        '-ab', '64k',
+        '-ar', '48000',
+        '-ac', '2',
+        '-ssrc', '11111111',
+        '-payload_type', '101',
+        '-f', 'rtp',
+        `rtp://127.0.0.1:${ttsRtpPort}`
+      ]);
+      proc.on('error', (err) => console.error(`[AI] FFmpeg TTS Error: ${err.message}`));
+      proc.stderr.on('data', (d) => {
+        const m = d.toString();
+        if (m.toLowerCase().includes('error')) console.error(`[AI] FFmpeg TTS: ${m.trim()}`);
+      });
+      proc.stdin.on('error', () => {}); // kill 직후 stdin write로 인한 EPIPE 무시
+      return proc;
+    };
+
+    let ffmpegTTS = spawnTTS();
+    let lastTtsRtpTs = 0;                 // 마지막으로 TTS RTP를 송출한 시각
+    const TTS_ACTIVE_WINDOW_MS = 800;     // 이 시간 내 RTP가 있었으면 "재생 중"으로 판단
 
     const ttsUdpSocket = dgram.createSocket('udp4');
     ttsUdpSocket.on('error', (err) => console.error(`[AI] TTS UDP Socket Error: ${err.message}`));
@@ -249,13 +258,34 @@ async function setupBridgeHandlers(broadcastId) {
       try {
         if (agent.aiProducer && !agent.aiProducer.closed) {
           agent.aiProducer.send(packet);
+          lastTtsRtpTs = Date.now();
         }
       } catch (err) {
         console.error(`[AI] aiProducer.send failed: ${err.message}`);
       }
     });
 
-    const onMessage = (data) => {
+    // 바지인: 멘토 음성이 감지되면 재생 중인 TTS를 즉시 끊음
+    const interruptTTS = () => {
+      const playing = Date.now() - lastTtsRtpTs < TTS_ACTIVE_WINDOW_MS;
+      if (!playing) return; // 재생 중이 아니면 무시 (불필요한 재시작 방지)
+      console.log(`[AI] 🎙️ 멘토 발화 감지 → TTS 인터럽트`);
+      try { if (!ffmpegTTS.killed) ffmpegTTS.kill('SIGKILL'); } catch (e) {}
+      ffmpegTTS = spawnTTS(); // 버퍼 비운 새 인스턴스로 교체
+      lastTtsRtpTs = 0;
+    };
+
+    const onMessage = (data, isBinary) => {
+      // 텍스트 프레임 = 제어 메시지 (인터럽트 등)
+      const isText = typeof data === 'string' || isBinary === false;
+      if (isText) {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg && msg.type === 'interrupt') interruptTTS();
+        } catch (e) {}
+        return;
+      }
+      // 바이너리 프레임 = TTS PCM
       if (Buffer.isBuffer(data) && ffmpegTTS.stdin.writable) {
         ffmpegTTS.stdin.write(data);
       }
