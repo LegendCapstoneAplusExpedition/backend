@@ -44,8 +44,8 @@ module.exports = {
     webRtcTransportOptions: {
       listenIps: [
         {
-          ip: process.env.MEDIASOUP_LISTEN_IP || '127.0.0.1',
-          announcedIp: process.env.MEDIASOUP_ANNOUNCED_IP || '127.0.0.1'
+          ip: process.env.MEDIASOUP_LISTEN_IP || '0.0.0.0',
+          announcedIp: process.env.MEDIASOUP_ANNOUNCED_IP || '172.16.11.250'
         }
       ],
       initialAvailableOutgoingBitrate: 1000000,

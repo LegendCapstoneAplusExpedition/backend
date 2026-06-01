@@ -27,7 +27,12 @@ async function startAIAgent(broadcastId) {
     scriptPath,
     '--mode', 'server',
     '--port', aiPort.toString()
-  ]);
+  ], {
+    env: {
+      ...process.env,
+      BROADCAST_ID: broadcastId,
+    },
+  });
 
   pythonProcess.stdout.on('data', (data) => console.log(`[AI-Py-Out]: ${data}`));
   pythonProcess.stderr.on('data', (data) => {

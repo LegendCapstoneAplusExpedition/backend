@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const config = require('../config');
 const broadcastService = require('../services/broadcastService');
 const aiService = require('../services/aiService');
+const chatListenListStore = require('../services/chatListenListStore');
 const Chat = require('../models/Chat');
 const Broadcast = require('../models/Broadcast');
 
@@ -168,6 +169,17 @@ module.exports = (io) => {
           message: message,
         });
         await chat.save();
+        try {
+          await chatListenListStore.appendChat({
+            broadcastId: socket.broadcastId,
+            userId: socket.userId,
+            username: socket.username,
+            message,
+            createdAt: chat.createdAt,
+          });
+        } catch (mirrorErr) {
+          console.error('[ChatListenList] Mirror failed:', mirrorErr.message);
+        }
 
         io.to(socket.broadcastId).emit('receiveChat', {
           username: socket.username,
