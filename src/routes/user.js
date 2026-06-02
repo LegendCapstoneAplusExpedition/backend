@@ -4,6 +4,7 @@ const User = require('../models/User');
 const Board = require('../models/Board');
 const Post = require('../models/Post');
 const auth = require('../middlewares/auth');
+const subscriptionController = require('../controllers/subscriptionController');
 
 /**
  * @swagger
@@ -11,6 +12,60 @@ const auth = require('../middlewares/auth');
  *   name: User
  *   description: 유저 및 게시판 관리
  */
+
+/**
+ * @swagger
+ * /api/user/subscriptions:
+ *   get:
+ *     summary: 내 구독 목록 조회
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: 구독 목록 반환
+ */
+router.get('/subscriptions', auth, subscriptionController.getMySubscriptions);
+
+/**
+ * @swagger
+ * /api/user/subscribe/{mentorId}:
+ *   post:
+ *     summary: 멘토 구독
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: mentorId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       201:
+ *         description: 구독 성공
+ */
+router.post('/subscribe/:mentorId', auth, subscriptionController.subscribe);
+
+/**
+ * @swagger
+ * /api/user/subscribe/{mentorId}:
+ *   delete:
+ *     summary: 구독 취소
+ *     tags: [User]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: mentorId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: 구독 취소 성공
+ */
+router.delete('/subscribe/:mentorId', auth, subscriptionController.unsubscribe);
 
 /**
  * @swagger
