@@ -17,9 +17,11 @@ function createHttpServer() {
       cert: fs.readFileSync(certPath),
       key: fs.readFileSync(keyPath),
     }, app);
+    console.log(`🔐 HTTPS enabled (cert: ${certPath})`);
     return { server, protocol: 'https' };
   }
 
+  console.warn(`⚠️  SSL cert not found, falling back to HTTP. (looked for: ${certPath})`);
   return { server: http.createServer(app), protocol: 'http' };
 }
 

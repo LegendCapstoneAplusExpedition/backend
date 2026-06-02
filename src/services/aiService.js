@@ -2,12 +2,26 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const net = require('net');
 const dgram = require('dgram');
 const WebSocket = require('ws');
 const broadcastService = require('./broadcastService');
 const Broadcast = require('../models/Broadcast');
 
 const activeAgents = new Map();
+
+// OS가 할당하는 빈 포트를 얻는다. 동시 방송이 같은 포트(8765)에 충돌하지 않도록
+// 방송마다 고유 포트로 Python STT 서버를 띄운다.
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+  });
+}
 
 async function startAIAgent(broadcastId) {
   if (activeAgents.has(broadcastId)) {
@@ -34,7 +48,8 @@ async function startAIAgent(broadcastId) {
     ? path.join(__dirname, '../ai-module/venv/Scripts/python.exe')
     : path.join(__dirname, '../ai-module/.venv/bin/python');
   const scriptPath = path.join(__dirname, '../ai-module/main.py');
-  const aiPort = 8765;
+  const aiPort = await getFreePort();  // 방송별 고유 포트 (동시 방송 충돌 방지)
+  console.log(`[AI] Allocated STT port ${aiPort} for broadcast ${broadcastId}`);
 
   const pythonArgs = [
     scriptPath,
@@ -58,15 +73,23 @@ async function startAIAgent(broadcastId) {
   pythonProcess.stdout.setEncoding('utf-8');
   pythonProcess.stderr.setEncoding('utf-8');
 
-  pythonProcess.stdout.on('data', (data) => console.log(`[AI-Py-Out]: ${data}`));
-  pythonProcess.stderr.on('data', (data) => {
-    const msg = data.toString();
-    if (msg.includes('Using cache found in')) {
-      console.log(`[AI-Py-Log]: ${msg.trim()}`);
-    } else {
-      console.error(`[AI-Py-Err]: ${msg.trim()}`);
+  // 동시 방송 시 로그가 뒤섞이지 않도록 방송ID·포트로 줄 단위 태깅한다.
+  // (한 data 청크에 여러 줄이 와도 각 줄에 접두사를 붙여 grep/필터 가능)
+  const logTag = `AI ${broadcastId}:${aiPort}`;
+  const emitLines = (data, isErr) => {
+    for (const line of data.toString().split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      // torch.hub 캐시 안내("Using cache found in")는 stderr지만 오류가 아니다.
+      if (isErr && !line.includes('Using cache found in')) {
+        console.error(`[${logTag}] ${line}`);
+      } else {
+        console.log(`[${logTag}] ${line}`);
+      }
     }
-  });
+  };
+
+  pythonProcess.stdout.on('data', (data) => emitLines(data, false));
+  pythonProcess.stderr.on('data', (data) => emitLines(data, true));
 
   // 2. AI 음성 송출을 위한 DirectTransport
   const aiTransport = await room.router.createDirectTransport();
@@ -86,6 +109,7 @@ async function startAIAgent(broadcastId) {
 
   const agent = {
     broadcastId,
+    aiPort,
     pythonProcess,
     aiProducer,
     aiTransport,

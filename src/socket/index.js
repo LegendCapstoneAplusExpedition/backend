@@ -12,8 +12,16 @@ module.exports = (io) => {
 
   // Authentication Middleware for Socket.IO
   io.use((socket, next) => {
-    const token = socket.handshake.auth.token || socket.handshake.headers['x-auth-token'];
-    
+    const authHeader = socket.handshake.headers['authorization'];
+    const bearerToken =
+      authHeader && authHeader.startsWith('Bearer ')
+        ? authHeader.slice(7).trim()
+        : null;
+    const token =
+      socket.handshake.auth.token ||
+      socket.handshake.headers['x-auth-token'] ||
+      bearerToken;
+
     if (!token) {
       return next(new Error('Authentication error: Token missing'));
     }

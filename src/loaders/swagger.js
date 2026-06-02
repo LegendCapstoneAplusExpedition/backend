@@ -34,6 +34,10 @@ const options = {
     },
     servers: [
       {
+        url: 'https://lcae.duckdns.org',
+        description: 'Production (HTTPS)',
+      },
+      {
         url: `http://localhost:${config.port}`,
         description: 'Local server',
       },
@@ -41,10 +45,11 @@ const options = {
     components: {
       securitySchemes: {
         bearerAuth: {
-          type: 'apiKey',
-          name: 'x-auth-token',
-          in: 'header',
-          description: 'JWT 토큰을 x-auth-token 헤더에 넣어주세요.',
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'JWT',
+          description:
+            'JWT 토큰을 Authorization 헤더에 "Bearer <token>" 형식으로 넣어주세요. (레거시 x-auth-token 헤더도 지원됩니다.)',
         },
       },
     },
