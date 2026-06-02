@@ -10,7 +10,7 @@ exports.updatePost = async (postId, userId, updateData) => {
     throw new Error('NOT_AUTHORIZED');
   }
 
-  // Update only content and category
+  // Update only editable fields
   if (updateData.content) post.content = updateData.content;
   if (updateData.category) post.category = updateData.category;
 

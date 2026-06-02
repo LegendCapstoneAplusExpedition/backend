@@ -41,9 +41,13 @@ module.exports = (io) => {
 
     // --- 1. Broadcast Session Management ---
 
-    socket.on('createBroadcast', async ({ title }, callback) => {
+    socket.on('createBroadcast', async ({ title, topic }, callback) => {
       try {
-        const data = await broadcastService.createBroadcast(title, socket.userId);
+        const data = await broadcastService.createBroadcast({
+          title,
+          topic,
+          userId: socket.userId,
+        });
         socket.join(data.broadcastId);
         
         socket.broadcastId = data.broadcastId;

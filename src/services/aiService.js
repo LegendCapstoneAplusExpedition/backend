@@ -31,13 +31,15 @@ async function startAIAgent(broadcastId) {
   const room = broadcastService.rooms.get(broadcastId);
   if (!room) throw new Error('Broadcast room not found');
 
-  // 방송 제목을 AI 주제로 전달 (LLM 환각 감소)
+  // 방송 주제를 AI 주제로 전달 (기존 데이터는 title로 fallback)
   let broadcastTopic = '';
   try {
-    const broadcast = await Broadcast.findById(broadcastId).select('title').lean();
-    if (broadcast && broadcast.title) broadcastTopic = broadcast.title;
+    const broadcast = await Broadcast.findById(broadcastId).select('title topic').lean();
+    if (broadcast) {
+      broadcastTopic = broadcast.topic || broadcast.title || '';
+    }
   } catch (err) {
-    console.error(`[AI] 방송 제목 조회 실패: ${err.message}`);
+    console.error(`[AI] 방송 주제 조회 실패: ${err.message}`);
   }
 
   console.log(`[AI] Starting Agent for broadcast: ${broadcastId}${broadcastTopic ? ` (주제: ${broadcastTopic})` : ''}`);

@@ -15,8 +15,8 @@ const options = {
 웹소켓 연결 후 사용할 수 있는 주요 이벤트입니다.
 
 #### **[방송 관리]**
-- **emit \`createBroadcast\`**: \`{ title: string }\`
-  - 응답: \`{ success: true, broadcastId: string, rtpCapabilities: object }\`
+- **emit \`createBroadcast\`**: \`{ title: string, topic: string }\`
+  - 응답: \`{ success: true, broadcastId: string, title: string, topic: string, rtpCapabilities: object }\`
 - **emit \`joinBroadcast\`**: \`{ broadcastId: string }\`
   - 응답: \`{ success: true, rtpCapabilities: object }\`
 

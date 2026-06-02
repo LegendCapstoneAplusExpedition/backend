@@ -9,10 +9,18 @@ const rooms = new Map();
 /**
  * Creates a new broadcast session.
  */
-async function createBroadcast(title, userId) {
+async function createBroadcast({ title, topic, userId }) {
+  const nextTitle = normalizeText(title);
+  const nextTopic = normalizeText(topic) || nextTitle;
+
+  if (!nextTitle) {
+    throw new Error('Broadcast title is required');
+  }
+
   // 1. Create DB record
   const broadcast = new Broadcast({
-    title,
+    title: nextTitle,
+    topic: nextTopic,
     host: userId,
     status: 'live',
   });
@@ -31,8 +39,16 @@ async function createBroadcast(title, userId) {
 
   return {
     broadcastId: broadcast._id.toString(),
+    createdAt: broadcast.createdAt,
     rtpCapabilities: router.rtpCapabilities,
+    title: broadcast.title,
+    topic: broadcast.topic,
+    viewersCount: broadcast.viewersCount,
   };
+}
+
+function normalizeText(value) {
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 /**

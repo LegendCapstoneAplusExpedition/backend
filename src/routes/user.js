@@ -1,10 +1,30 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const User = require('../models/User');
-const Board = require('../models/Board');
-const Post = require('../models/Post');
-const auth = require('../middlewares/auth');
-const subscriptionController = require('../controllers/subscriptionController');
+const User = require("../models/User");
+const Board = require("../models/Board");
+const Post = require("../models/Post");
+const Comment = require("../models/Comment");
+const auth = require("../middlewares/auth");
+const jwt = require("jsonwebtoken");
+const config = require("../config");
+const subscriptionController = require("../controllers/subscriptionController");
+
+function getOptionalUserId(req) {
+  const authHeader = req.headers["authorization"];
+  const bearerToken =
+    authHeader && authHeader.startsWith("Bearer ")
+      ? authHeader.slice(7).trim()
+      : null;
+  const token = bearerToken || req.headers["x-auth-token"];
+
+  if (!token) return null;
+
+  try {
+    return jwt.verify(token, config.jwtSecret).userId;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * @swagger
@@ -25,7 +45,7 @@ const subscriptionController = require('../controllers/subscriptionController');
  *       200:
  *         description: 구독 목록 반환
  */
-router.get('/subscriptions', auth, subscriptionController.getMySubscriptions);
+router.get("/subscriptions", auth, subscriptionController.getMySubscriptions);
 
 /**
  * @swagger
@@ -45,7 +65,7 @@ router.get('/subscriptions', auth, subscriptionController.getMySubscriptions);
  *       201:
  *         description: 구독 성공
  */
-router.post('/subscribe/:mentorId', auth, subscriptionController.subscribe);
+router.post("/subscribe/:mentorId", auth, subscriptionController.subscribe);
 
 /**
  * @swagger
@@ -65,7 +85,7 @@ router.post('/subscribe/:mentorId', auth, subscriptionController.subscribe);
  *       200:
  *         description: 구독 취소 성공
  */
-router.delete('/subscribe/:mentorId', auth, subscriptionController.unsubscribe);
+router.delete("/subscribe/:mentorId", auth, subscriptionController.unsubscribe);
 
 /**
  * @swagger
@@ -77,9 +97,9 @@ router.delete('/subscribe/:mentorId', auth, subscriptionController.unsubscribe);
  *       200:
  *         description: 유저 목록 반환
  */
-router.get('/list', async (req, res) => {
+router.get("/list", async (req, res) => {
   try {
-    const users = await User.find().select('username createdAt');
+    const users = await User.find().select("username createdAt");
     res.json(users);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -102,22 +122,22 @@ router.get('/list', async (req, res) => {
  *       200:
  *         description: 게시판 정보 반환
  */
-router.get('/:userId/board', async (req, res) => {
+router.get("/:userId/board", async (req, res) => {
   try {
     let board = await Board.findOne({ ownerId: req.params.userId });
-    
+
     if (!board) {
       const user = await User.findById(req.params.userId);
-      if (!user) return res.status(404).json({ error: 'User not found' });
-      
+      if (!user) return res.status(404).json({ error: "User not found" });
+
       board = new Board({
         ownerId: user._id,
         title: `${user.username}님의 게시판`,
-        description: `${user.username}님의 공간입니다.`
+        description: `${user.username}님의 공간입니다.`,
       });
       await board.save();
     }
-    
+
     res.json(board);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -140,12 +160,37 @@ router.get('/:userId/board', async (req, res) => {
  *       200:
  *         description: 게시글 목록 반환
  */
-router.get('/board/:boardId/posts', async (req, res) => {
+router.get("/board/:boardId/posts", async (req, res) => {
   try {
+    const userId = getOptionalUserId(req);
     const posts = await Post.find({ boardId: req.params.boardId })
-      .populate('authorId', 'username')
+      .populate("authorId", "username")
       .sort({ createdAt: -1 });
-    res.json(posts);
+    const commentCounts = await Comment.aggregate([
+      { $match: { postId: { $in: posts.map((post) => post._id) } } },
+      { $group: { _id: "$postId", count: { $sum: 1 } } },
+    ]);
+    const countByPostId = new Map(
+      commentCounts.map((item) => [item._id.toString(), item.count]),
+    );
+
+    res.json(
+      posts.map((post) => {
+        const data = post.toObject();
+        const likes = Array.isArray(data.likes) ? data.likes : [];
+
+        return {
+          ...data,
+          commentsCount: countByPostId.get(post._id.toString()) || 0,
+          likedByMe: userId
+            ? likes.some(
+                (likeUserId) => likeUserId.toString() === userId.toString(),
+              )
+            : false,
+          likesCount: likes.length,
+        };
+      }),
+    );
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -172,11 +217,8 @@ router.get('/board/:boardId/posts', async (req, res) => {
  *           schema:
  *             type: object
  *             required:
- *               - title
  *               - content
  *             properties:
- *               title:
- *                 type: string
  *               content:
  *                 type: string
  *               category:
@@ -186,24 +228,26 @@ router.get('/board/:boardId/posts', async (req, res) => {
  *       201:
  *         description: 게시글 작성 성공
  */
-router.post('/board/:boardId/post', auth, async (req, res) => {
+router.post("/board/:boardId/post", auth, async (req, res) => {
   try {
-    const { title, content, category } = req.body;
-    if (!title || !content) {
-        return res.status(400).json({ error: 'Title and content are required' });
+    const { content, category } = req.body;
+    if (!content) {
+      return res.status(400).json({ error: "Content is required" });
     }
 
     const post = new Post({
       boardId: req.params.boardId,
       authorId: req.user.userId,
-      title,
       content,
-      category: category || '일반'
+      category: category || "일반",
     });
 
     await post.save();
-    
-    const savedPost = await Post.findById(post._id).populate('authorId', 'username');
+
+    const savedPost = await Post.findById(post._id).populate(
+      "authorId",
+      "username",
+    );
     res.status(201).json(savedPost);
   } catch (err) {
     res.status(500).json({ error: err.message });
