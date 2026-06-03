@@ -280,8 +280,20 @@ async function setupBridgeHandlers(broadcastId) {
     });
 
     const onMessage = (data) => {
-      if (Buffer.isBuffer(data) && ffmpegTTS.stdin.writable) {
-        ffmpegTTS.stdin.write(data);
+      if (Buffer.isBuffer(data)) {
+        if (ffmpegTTS.stdin.writable) {
+          ffmpegTTS.stdin.write(data);
+        }
+      } else if (typeof data === 'string') {
+        try {
+          const msg = JSON.parse(data);
+          if (msg.type === 'status' && global.io) {
+            console.log(`[AI] Status Change for ${broadcastId}: ${msg.value}`);
+            global.io.to(broadcastId).emit('ai_status', { state: msg.value });
+          }
+        } catch (err) {
+          console.error(`[AI] Failed to parse WebSocket message: ${err.message}`);
+        }
       }
     };
     agent.sttWs.on('message', onMessage);
