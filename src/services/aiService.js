@@ -3,7 +3,6 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const net = require('net');
-const dgram = require('dgram');
 const WebSocket = require('ws');
 const broadcastService = require('./broadcastService');
 const Broadcast = require('../models/Broadcast');
@@ -94,8 +93,24 @@ async function startAIAgent(broadcastId) {
   pythonProcess.stdout.on('data', (data) => emitLines(data, false));
   pythonProcess.stderr.on('data', (data) => emitLines(data, true));
 
-  // 2. AI 음성 송출을 위한 DirectTransport
-  const aiTransport = await room.router.createDirectTransport();
+  // 2. AI 음성 송출을 위한 PlainTransport
+  //    ffmpeg가 RTP를 이 transport의 UDP 포트로 직접 보내고 mediasoup이 네이티브로 수신한다.
+  //    기존 DirectTransport + dgram + producer.send() 중계는 이벤트 루프가 STT/LLM으로
+  //    바쁠 때 RTP 전달이 밀렸다 몰리며 consumer 측 jitter(치지직)를 유발했다.
+  //    comedia=true로 ffmpeg의 송신 출처(tuple)를 첫 패킷에서 자동 감지한다.
+  const aiTransport = await room.router.createPlainTransport({
+    listenIp: '127.0.0.1',
+    rtcpMux: true,
+    comedia: true,
+  });
+  const aiRtpPort = aiTransport.tuple.localPort;
+  console.log(`[AI] AI voice PlainTransport listening on 127.0.0.1:${aiRtpPort} for ${broadcastId}`);
+  // comedia=true: ffmpeg의 첫 RTP 패킷이 도착하면 발생. 이 로그가 안 뜨면
+  // ffmpeg가 RTP를 전혀 안 보내거나 mediasoup에 도달하지 못한다는 뜻.
+  aiTransport.on('tuple', (t) => {
+    console.log(`[AI] AI voice RTP detected: ${t.remoteIp}:${t.remotePort} -> :${t.localPort} (${t.protocol}) for ${broadcastId}`);
+  });
+
   const aiProducer = await aiTransport.produce({
     kind: 'audio',
     rtpParameters: {
@@ -116,6 +131,7 @@ async function startAIAgent(broadcastId) {
     pythonProcess,
     aiProducer,
     aiTransport,
+    aiRtpPort,
     status: 'starting',
     bridge: null,
     sttWs: null
@@ -253,8 +269,7 @@ async function setupBridgeHandlers(broadcastId) {
 
     ffmpegSTT.on('error', (err) => console.error(`[AI] FFmpeg STT Error: ${err.message}`));
 
-    // 3. TTS를 위한 FFmpeg 설정 (PCM -> RTP/Opus)
-    const ttsRtpPort = 6004 + Math.floor(Math.random() * 10000);
+    // 3. TTS를 위한 FFmpeg 설정 (PCM -> RTP/Opus). mediasoup PlainTransport로 직접 송신한다.
     const ffmpegTTS = spawn('ffmpeg', [
       '-re',
       '-f', 's16le',
@@ -268,7 +283,7 @@ async function setupBridgeHandlers(broadcastId) {
       '-ssrc', '11111111',
       '-payload_type', '101',
       '-f', 'rtp',
-      `rtp://127.0.0.1:${ttsRtpPort}`
+      `rtp://127.0.0.1:${agent.aiRtpPort}`
     ]);
 
     ffmpegTTS.on('error', (err) => console.error(`[AI] FFmpeg TTS Error: ${err.message}`));
@@ -277,35 +292,31 @@ async function setupBridgeHandlers(broadcastId) {
       if (m.toLowerCase().includes('error')) console.error(`[AI] FFmpeg TTS: ${m.trim()}`);
     });
 
-    const ttsUdpSocket = dgram.createSocket('udp4');
-    ttsUdpSocket.on('error', (err) => console.error(`[AI] TTS UDP Socket Error: ${err.message}`));
-
-    ttsUdpSocket.bind(ttsRtpPort, '127.0.0.1');
-    ttsUdpSocket.on('message', (packet) => {
-      try {
-        if (agent.aiProducer && !agent.aiProducer.closed) {
-          agent.aiProducer.send(packet);
-        }
-      } catch (err) {
-        console.error(`[AI] aiProducer.send failed: ${err.message}`);
+    // python WebSocket 메시지 처리.
+    //   - 바이너리 프레임  = 합성 오디오(PCM) → ffmpeg stdin
+    //   - 텍스트 프레임    = 제어 JSON(status/interrupt)
+    // 주의: ws v7+ 는 텍스트 프레임도 Buffer로 전달하므로 typeof===\"string\"으로는
+    // 절대 구분되지 않는다. 반드시 isBinary 플래그로 갈라야 한다. 이걸 안 하면
+    // {\"type\":\"interrupt\"} 같은 제어 JSON(홀수 바이트)이 PCM 스트림에 섞여
+    // 이후 모든 샘플이 1바이트 밀리며 치지직(정렬 깨짐)이 발생한다.
+    const onMessage = (data, isBinary) => {
+      if (isBinary) {
+        if (ffmpegTTS.stdin.writable) ffmpegTTS.stdin.write(data);
+        return;
       }
-    });
-
-    const onMessage = (data) => {
-      if (Buffer.isBuffer(data)) {
-        if (ffmpegTTS.stdin.writable) {
-          ffmpegTTS.stdin.write(data);
-        }
-      } else if (typeof data === 'string') {
-        try {
-          const msg = JSON.parse(data);
-          if (msg.type === 'status' && global.io) {
-            console.log(`[AI] Status Change for ${broadcastId}: ${msg.value}`);
-            global.io.to(broadcastId).emit('ai_status', { state: msg.value });
-          }
-        } catch (err) {
-          console.error(`[AI] Failed to parse WebSocket message: ${err.message}`);
-        }
+      let msg;
+      try {
+        msg = JSON.parse(data.toString());
+      } catch (err) {
+        console.error(`[AI] Failed to parse WS control message: ${err.message}`);
+        return;
+      }
+      if (msg.type === 'status' && global.io) {
+        console.log(`[AI] Status Change for ${broadcastId}: ${msg.value}`);
+        global.io.to(broadcastId).emit('ai_status', { state: msg.value });
+      } else if (msg.type === 'interrupt') {
+        // 바지인: 호스트가 말하기 시작 → AI 발화 중단 신호. (현재는 로깅만)
+        console.log(`[AI] Barge-in interrupt received for ${broadcastId}`);
       }
     };
     agent.sttWs.on('message', onMessage);
@@ -316,7 +327,6 @@ async function setupBridgeHandlers(broadcastId) {
       if (!ffmpegSTT.killed) ffmpegSTT.kill('SIGKILL');
       if (!ffmpegTTS.killed) ffmpegTTS.kill('SIGKILL');
       if (!sttTransport.closed) sttTransport.close();
-      try { ttsUdpSocket.close(); } catch (e) {}
       if (fs.existsSync(sdpPath)) {
           try { fs.unlinkSync(sdpPath); } catch (e) {}
       }
