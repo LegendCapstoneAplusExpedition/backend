@@ -211,6 +211,7 @@ module.exports = (io) => {
       if (socket.broadcastId) {
         if (socket.isHost) {
           try {
+            await aiService.stopAIAgent(socket.broadcastId).catch(() => {});
             await broadcastService.endBroadcast(socket.broadcastId);
             io.to(socket.broadcastId).emit('broadcastEnded');
           } catch (err) {
