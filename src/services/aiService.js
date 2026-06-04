@@ -134,7 +134,8 @@ async function startAIAgent(broadcastId) {
     aiRtpPort,
     status: 'starting',
     bridge: null,
-    sttWs: null
+    sttWs: null,
+    openingTriggered: false  // 소환당 1회: 브리지 준비 후 Python에 reset(오프닝) 신호 전송
   };
   activeAgents.set(broadcastId, agent);
 
@@ -270,27 +271,43 @@ async function setupBridgeHandlers(broadcastId) {
     ffmpegSTT.on('error', (err) => console.error(`[AI] FFmpeg STT Error: ${err.message}`));
 
     // 3. TTS를 위한 FFmpeg 설정 (PCM -> RTP/Opus). mediasoup PlainTransport로 직접 송신한다.
-    const ffmpegTTS = spawn('ffmpeg', [
-      '-re',
-      '-f', 's16le',
-      '-ar', '24000',
-      '-ac', '1',
-      '-i', 'pipe:0',
-      '-acodec', 'libopus',
-      '-ab', '64k',
-      '-ar', '48000',
-      '-ac', '2',
-      '-ssrc', '11111111',
-      '-payload_type', '101',
-      '-f', 'rtp',
-      `rtp://127.0.0.1:${agent.aiRtpPort}`
-    ]);
+    //    바지인(interrupt) 시 프로세스를 재시작해 stdin에 쌓인 미재생 PCM을 즉시 폐기한다.
+    //    -re(실시간 읽기) 때문에 합성된 한 문장이 버퍼에 쌓인 채 천천히 흘러나오므로,
+    //    프로세스를 교체하지 않으면 멘토가 말해도 뒷부분이 계속 재생된다.
+    const spawnTtsFfmpeg = () => {
+      const proc = spawn('ffmpeg', [
+        '-re',
+        '-f', 's16le',
+        '-ar', '24000',
+        '-ac', '1',
+        '-i', 'pipe:0',
+        '-acodec', 'libopus',
+        '-ab', '64k',
+        '-ar', '48000',
+        '-ac', '2',
+        '-ssrc', '11111111',
+        '-payload_type', '101',
+        '-f', 'rtp',
+        `rtp://127.0.0.1:${agent.aiRtpPort}`
+      ]);
 
-    ffmpegTTS.on('error', (err) => console.error(`[AI] FFmpeg TTS Error: ${err.message}`));
-    ffmpegTTS.stderr.on('data', (d) => {
-      const m = d.toString();
-      if (m.toLowerCase().includes('error')) console.error(`[AI] FFmpeg TTS: ${m.trim()}`);
-    });
+      proc.on('error', (err) => console.error(`[AI] FFmpeg TTS Error: ${err.message}`));
+      proc.stderr.on('data', (d) => {
+        const m = d.toString();
+        if (m.toLowerCase().includes('error')) console.error(`[AI] FFmpeg TTS: ${m.trim()}`);
+      });
+      return proc;
+    };
+
+    let ffmpegTTS = spawnTtsFfmpeg();
+
+    // 새 ffmpeg로 교체 후 이전 프로세스를 종료 → 버퍼 폐기, 즉시 무음.
+    // (먼저 교체해야 그 사이 도착하는 PCM 프레임이 새 프로세스로 들어간다.)
+    const restartTtsFfmpeg = () => {
+      const old = ffmpegTTS;
+      ffmpegTTS = spawnTtsFfmpeg();
+      if (old && !old.killed) old.kill('SIGKILL');
+    };
 
     // python WebSocket 메시지 처리.
     //   - 바이너리 프레임  = 합성 오디오(PCM) → ffmpeg stdin
@@ -301,7 +318,7 @@ async function setupBridgeHandlers(broadcastId) {
     // 이후 모든 샘플이 1바이트 밀리며 치지직(정렬 깨짐)이 발생한다.
     const onMessage = (data, isBinary) => {
       if (isBinary) {
-        if (ffmpegTTS.stdin.writable) ffmpegTTS.stdin.write(data);
+          if (ffmpegTTS.stdin.writable) ffmpegTTS.stdin.write(data);
         return;
       }
       let msg;
@@ -315,11 +332,23 @@ async function setupBridgeHandlers(broadcastId) {
         console.log(`[AI] Status Change for ${broadcastId}: ${msg.value}`);
         global.io.to(broadcastId).emit('ai_status', { state: msg.value });
       } else if (msg.type === 'interrupt') {
-        // 바지인: 호스트가 말하기 시작 → AI 발화 중단 신호. (현재는 로깅만)
-        console.log(`[AI] Barge-in interrupt received for ${broadcastId}`);
+        // 바지인: 호스트가 말하기 시작 → ffmpeg를 재시작해 재생 중/대기 중 TTS 오디오를 즉시 끊는다.
+        console.log(`[AI] Barge-in interrupt received for ${broadcastId} → TTS 중단(ffmpeg 재시작)`);
+        restartTtsFfmpeg();
       }
     };
     agent.sttWs.on('message', onMessage);
+    // AI 소환(브리지 최초 연결) 시 1회: Python 세션 상태를 Opening으로 초기화하고
+    // 오프닝 멘트를 재생시킨다. ffmpegTTS가 준비된 뒤에 보내야 오프닝 오디오가 유실되지
+    // 않는다. setupBridgeHandlers는 호스트 Producer 변경 등으로 여러 번 불릴 수 있으므로
+    // 플래그로 소환당 1회만 보낸다(재소환 시 새 agent라 플래그가 초기화됨).
+    if (!agent.openingTriggered) {
+      agent.openingTriggered = true;
+      if (agent.sttWs && agent.sttWs.readyState === WebSocket.OPEN) {
+        agent.sttWs.send(JSON.stringify({ type: 'reset' }));
+        console.log(`[AI] Sent reset (opening trigger) for ${broadcastId}`);
+      }
+    }
 
     const cleanup = () => {
       console.log(`[AI] Bridge cleanup triggered for ${broadcastId}`);
