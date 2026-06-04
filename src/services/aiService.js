@@ -67,6 +67,7 @@ async function startAIAgent(broadcastId) {
       BROADCAST_TOPIC: broadcastTopic,
       PYTHONUTF8: '1',
       PYTHONIOENCODING: 'utf-8',
+      PYTHONUNBUFFERED: '1',
     },
   });
 
@@ -119,6 +120,15 @@ async function startAIAgent(broadcastId) {
   };
   activeAgents.set(broadcastId, agent);
 
+  pythonProcess.on('exit', (code, signal) => {
+    console.log(`[AI] Python process exited (code=${code}, signal=${signal}) for ${broadcastId}`);
+    const currentAgent = activeAgents.get(broadcastId);
+    if (currentAgent) {
+      currentAgent.pythonProcess = null;
+      stopAIAgent(broadcastId);
+    }
+  });
+
   // 3. WebSocket 연결 시도
   const MAX_RETRIES = 10;
   let retryCount = 0;
@@ -136,7 +146,7 @@ async function startAIAgent(broadcastId) {
     });
 
     sttWs.on('error', (err) => {
-      console.error(`[AI] STT WebSocket error: ${err.message}`);
+      console.error(`[AI] STT WebSocket error: ${err.message || err.code || String(err)}`);
       if (retryCount < MAX_RETRIES && agent.status === 'starting') {
         retryCount++;
         setTimeout(attemptBridgeConnection, 2000);
