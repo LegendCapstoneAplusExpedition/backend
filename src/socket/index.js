@@ -73,6 +73,10 @@ module.exports = (io) => {
         const existingProducers = [];
         if (room && room.producers) {
           for (const producer of room.producers.values()) {
+            if (!producer || producer.closed) {
+              room.producers.delete(producer && producer.id);
+              continue;
+            }
             existingProducers.push({ producerId: producer.id });
           }
         }
@@ -116,6 +120,12 @@ module.exports = (io) => {
         const producer = await transport.produce({ kind, rtpParameters });
 
         room.producers.set(producer.id, producer);
+        producer.observer.on('close', () => {
+          room.producers.delete(producer.id);
+        });
+        producer.on('transportclose', () => {
+          room.producers.delete(producer.id);
+        });
         
         socket.to(broadcastId).emit('newProducer', { producerId: producer.id });
 

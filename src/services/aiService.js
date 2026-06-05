@@ -22,6 +22,13 @@ function getFreePort() {
   });
 }
 
+function removeProducerFromRoom(room, producerId) {
+  if (!room || !room.producers || !producerId) return;
+  if (room.producers.delete(producerId)) {
+    console.log(`[AI] Removed stale producer from room: ${producerId}`);
+  }
+}
+
 async function startAIAgent(broadcastId) {
   if (activeAgents.has(broadcastId)) {
     throw new Error('AI Agent is already running for this broadcast');
@@ -124,6 +131,7 @@ async function startAIAgent(broadcastId) {
     }
   });
   room.producers.set(aiProducer.id, aiProducer);
+  aiProducer.observer.on('close', () => removeProducerFromRoom(room, aiProducer.id));
 
   const agent = {
     broadcastId,
@@ -198,9 +206,14 @@ async function setupBridgeHandlers(broadcastId) {
     agent.bridge = null;
   }
 
-  // 1. 호스트 오디오 Producer 찾기
+  // 1. 호스트 오디오 Producer 찾기. 이전 AI producer나 닫힌 producer가 room map에
+  // 남아 있으면 재시작 시 router.consume()에서 "Producer not found"가 난다.
   let hostAudioProducer = null;
   for (const producer of room.producers.values()) {
+    if (!producer || producer.closed) {
+      removeProducerFromRoom(room, producer && producer.id);
+      continue;
+    }
     if (producer.kind === 'audio' && producer.id !== agent.aiProducer.id) {
       hostAudioProducer = producer;
       break;
@@ -359,6 +372,12 @@ async function setupBridgeHandlers(broadcastId) {
 
   } catch (err) {
     console.error(`[AI] Bridge Setup Failed: ${err.message}`);
+    if (hostAudioProducer && /Producer with id .* not found/i.test(err.message)) {
+      removeProducerFromRoom(room, hostAudioProducer.id);
+    }
+    if (activeAgents.has(broadcastId)) {
+      setTimeout(() => setupBridgeHandlers(broadcastId), 1000);
+    }
   }
 }
 
@@ -404,6 +423,8 @@ async function stopAIAgent(broadcastId) {
       agent.pythonProcess = null;
     }
 
+    const room = broadcastService.rooms.get(broadcastId);
+    removeProducerFromRoom(room, agent.aiProducer && agent.aiProducer.id);
     if (agent.aiProducer && !agent.aiProducer.closed) {
       agent.aiProducer.close();
     }
