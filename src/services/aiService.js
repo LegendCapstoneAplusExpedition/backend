@@ -134,8 +134,8 @@ async function startAIAgent(broadcastId) {
     aiRtpPort,
     status: 'starting',
     bridge: null,
-    sttWs: null
-    // openingTriggered: false  // 소환당 1회: 브리지 준비 후 Python에 reset(오프닝) 신호 전송
+    sttWs: null,
+    openingTriggered: false  // 소환당 1회: 브리지 준비 후 Python에 reset(오프닝) 신호 전송
   };
   activeAgents.set(broadcastId, agent);
 
@@ -321,17 +321,23 @@ async function setupBridgeHandlers(broadcastId) {
       }
     };
     agent.sttWs.on('message', onMessage);
-    // // AI 소환(브리지 최초 연결) 시 1회: Python 세션 상태를 Opening으로 초기화하고
-    // // 오프닝 멘트를 재생시킨다. ffmpegTTS가 준비된 뒤에 보내야 오프닝 오디오가 유실되지
-    // // 않는다. setupBridgeHandlers는 호스트 Producer 변경 등으로 여러 번 불릴 수 있으므로
-    // // 플래그로 소환당 1회만 보낸다(재소환 시 새 agent라 플래그가 초기화됨).
-    // if (!agent.openingTriggered) {
-    //   agent.openingTriggered = true;
-    //   if (agent.sttWs && agent.sttWs.readyState === WebSocket.OPEN) {
-    //     agent.sttWs.send(JSON.stringify({ type: 'reset' }));
-    //     console.log(`[AI] Sent reset (opening trigger) for ${broadcastId}`);
-    //   }
-    // }
+    // AI 소환(브리지 최초 연결) 시 1회: Python 세션 상태를 Opening으로 초기화하고
+    // 오프닝 멘트를 재생시킨다. ffmpegTTS가 준비된 뒤에 보내야 오프닝 오디오가 유실되지
+    // 않는다. setupBridgeHandlers는 호스트 Producer 변경 등으로 여러 번 불릴 수 있으므로
+    // 플래그로 소환당 1회만 보낸다(재소환 시 새 agent라 플래그가 초기화됨).
+    if (!agent.openingTriggered) {
+      agent.openingTriggered = true;
+      if (agent.sttWs && agent.sttWs.readyState === WebSocket.OPEN) {
+        agent.sttWs.send(JSON.stringify({ type: 'reset' }), (err) => {
+          if (err) {
+            agent.openingTriggered = false;
+            console.error(`[AI] Failed to send reset for ${broadcastId}: ${err.message}`);
+            return;
+          }
+          console.log(`[AI] Sent reset (opening trigger) for ${broadcastId}`);
+        });
+      }
+    }
 
     const cleanup = () => {
       console.log(`[AI] Bridge cleanup triggered for ${broadcastId}`);
